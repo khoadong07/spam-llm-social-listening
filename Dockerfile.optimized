@@ -1,0 +1,27 @@
+FROM python:3.11-slim
+
+# Install system dependencies for performance
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy requirements first for better caching
+COPY requirements.txt .
+
+# Install Python dependencies with optimizations
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
+COPY . .
+
+# Set environment variables for performance
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONPATH=/app
+
+# Use optimized main
+CMD ["python", "-m", "uvicorn", "app.optimized_main:app", "--host", "0.0.0.0", "--port", "8000", "--loop", "uvloop", "--access-log", "--workers", "1"]
