@@ -170,6 +170,14 @@ Type: {ctype}
 SPAM nếu: quảng cáo/bán hàng/sale/tuyển dụng sai ngữ cảnh; có SĐT/Zalo/link/giá; link rác/cá cược/18+; nội dung rác/vô nghĩa/lỗi font; không liên quan.
 NOT_SPAM nếu: hỏi đáp, review, chia sẻ, phàn nàn, thảo luận bình thường.
 
+Luật đặc biệt:
+- Real Estate + có SĐT/Zalo/link/giá cụ thể => SPAM (rao vặt)
+- Real Estate + hỏi đáp/tư vấn/review => NOT_SPAM (thảo luận)
+- Finance/Bank: hỏi/chia sẻ về vay, nợ, thẻ => NOT_SPAM
+- BĐS sai category => SPAM
+- Tuyển dụng sai category => SPAM
+- Có từ "liên hệ", "bán", "cho thuê" + SĐT => SPAM
+
 Output: SPAM hoặc NOT_SPAM"""
 
     def _build_prompt(self, request: SpamRequest) -> str:
