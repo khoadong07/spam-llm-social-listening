@@ -85,13 +85,18 @@ class SpamDetector:
                 parts.append(f"Post: {title}")
             if content:
                 parts.append(f"Comment: {content}")
+            elif desc:  # Nếu không có content thì dùng description
+                parts.append(f"Comment: {desc}")
         else:
             if title:
                 parts.append(f"Title: {title}")
+            # Ưu tiên content, nếu không có thì dùng description
             if content:
                 parts.append(f"Content: {content}")
-            if desc:
-                parts.append(f"Desc: {desc}")
+                if desc and desc != content:  # Thêm desc nếu khác content
+                    parts.append(f"Desc: {desc}")
+            elif desc:  # Nếu chỉ có description
+                parts.append(f"Content: {desc}")
 
         text = self._truncate("\n".join(parts), 100)
 
@@ -106,15 +111,18 @@ Type: {ctype}
 {text}
 
 SPAM nếu: quảng cáo/bán hàng/sale/tuyển dụng sai ngữ cảnh; có SĐT/Zalo/link/giá; link rác/cá cược/18+; nội dung rác/vô nghĩa/lỗi font; không liên quan.
-NOT_SPAM nếu: hỏi đáp, review, chia sẻ, phàn nàn, thảo luận bình thường.
+NOT_SPAM nếu: hỏi đáp, review, chia sẻ, phàn nàn, thảo luận bình thường, tin tức, phân tích.
 
 Luật đặc biệt:
 - Real Estate + có SĐT/Zalo/link/giá cụ thể => SPAM (rao vặt)
 - Real Estate + hỏi đáp/tư vấn/review => NOT_SPAM (thảo luận)
-- Finance/Bank: hỏi/chia sẻ về vay, nợ, thẻ => NOT_SPAM
+- Finance + thảo luận/phân tích/tin tức/hỏi đáp => NOT_SPAM (dù dài)
+- Finance + có SĐT/link dịch vụ tài chính => SPAM
 - BĐS sai category => SPAM
 - Tuyển dụng sai category => SPAM
 - Có từ "liên hệ", "bán", "cho thuê" + SĐT => SPAM
+- Comment dài với hashtag tin tức => NOT_SPAM (thảo luận)
+- Bài viết có nguồn tin (Báo, VTV, etc) => NOT_SPAM (tin tức)
 
 Output: SPAM hoặc NOT_SPAM"""
 
@@ -173,6 +181,29 @@ Output: SPAM hoặc NOT_SPAM"""
         # Bypass: nếu type là newsTopic thì trả về False (không phải spam)
         if request.type == "newsTopic":
             return False
+        
+        # Pre-check: Nội dung có trích dẫn nguồn tin chính thống => NOT_SPAM
+        content_text = self._safe(request.content) or self._safe(request.description)
+        if content_text:
+            # Kiểm tra có nguồn tin tức chính thống
+            news_sources = [
+                "nguồn:", "theo báo", "báo ", "vtv", "vov", "vnexpress", 
+                "tuổi trẻ", "thanh niên", "dân trí", "vietnamnet", "zing news",
+                "theo vtc", "theo vn", "tin từ", "trích nguồn"
+            ]
+            has_news_source = any(source in content_text.lower() for source in news_sources)
+            
+            # Kiểm tra không có dấu hiệu spam rõ ràng
+            spam_indicators = ["liên hệ:", "zalo:", "sdt:", "hotline:", "inbox"]
+            has_spam_indicator = any(indicator in content_text.lower() for indicator in spam_indicators)
+            
+            # Kiểm tra có số điện thoại (pattern: 0xxxxxxxxx)
+            import re
+            has_phone = bool(re.search(r'\b0\d{9}\b', content_text))
+            
+            # Nếu có nguồn tin chính thống và không có spam indicators => NOT_SPAM
+            if has_news_source and not has_spam_indicator and not has_phone:
+                return False
         
         # Generate cache key
         cache_key = self._generate_cache_key(request)
