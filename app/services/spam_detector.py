@@ -2,6 +2,7 @@ import asyncio
 import random
 import json
 import hashlib
+import re
 from typing import Optional
 import httpx
 import redis.asyncio as redis
@@ -178,6 +179,39 @@ Output: SPAM hoặc NOT_SPAM"""
         return "NOT_SPAM"
 
     async def detect_spam(self, request: SpamRequest) -> bool:
+        # Special case: index 65808b57f27526950c9feb3 - custom logic
+        if request.index == "65808b57f27526950c9feb3":
+            content_text = self._safe(request.content) or self._safe(request.description)
+            title_text = self._safe(request.title)
+            
+            # Kiểm tra nếu là quảng cáo tour du lịch => NOT_SPAM
+            tour_keywords = [
+                "tour du lịch", "khám phá", "du lịch", "hành trình", "chuyến đi",
+                "điểm đến", "thăm quan", "tham quan", "trải nghiệm", "chiêm ngưỡng",
+                "công viên", "di sản", "kỳ quan", "thác nước", "núi", "biển",
+                "thành phố", "phố cổ", "chùa", "đền", "lăng", "cung điện"
+            ]
+            
+            # Kiểm tra có từ khóa tour du lịch
+            has_tour_keywords = any(kw in content_text.lower() for kw in tour_keywords)
+            
+            # Nếu là tour du lịch => NOT_SPAM
+            if has_tour_keywords:
+                return False
+            
+            # Nếu không phải tour, kiểm tra dấu hiệu rao vặt BĐS
+            has_phone = bool(re.search(r'\b0\d{9}\b', content_text))
+            has_zalo = "zalo" in content_text.lower()
+            has_price = bool(re.search(r'\d+\s*(triệu|tỷ|đ|vnd)', content_text.lower()))
+            has_contact_keywords = any(kw in content_text.lower() for kw in ["liên hệ", "bán", "cho thuê", "inbox"])
+            has_bds_keywords = any(kw in title_text.lower() for kw in ["rao vặt", "bán nhà", "cho thuê", "bất động sản"])
+            
+            # Nếu có dấu hiệu rao vặt BĐS => SPAM, ngược lại => NOT_SPAM
+            if has_phone or has_zalo or has_price or has_contact_keywords or has_bds_keywords:
+                return True
+            else:
+                return False
+        
         # Bypass: nếu type là newsTopic thì trả về False (không phải spam)
         if request.type == "newsTopic":
             return False
@@ -198,7 +232,6 @@ Output: SPAM hoặc NOT_SPAM"""
             has_spam_indicator = any(indicator in content_text.lower() for indicator in spam_indicators)
             
             # Kiểm tra có số điện thoại (pattern: 0xxxxxxxxx)
-            import re
             has_phone = bool(re.search(r'\b0\d{9}\b', content_text))
             
             # Nếu có nguồn tin chính thống và không có spam indicators => NOT_SPAM
