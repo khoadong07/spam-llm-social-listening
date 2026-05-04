@@ -11,6 +11,49 @@ from app.config import settings
 from app.models import SpamRequest
 
 
+# ============================================================
+# Custom keyword whitelist per index (topic_id).
+# Nếu title/content/description chứa bất kỳ keyword nào trong
+# danh sách thì gán thẳng is_spam = False, bỏ qua LLM.
+# Để thêm index mới: thêm entry vào dict bên dưới.
+# ============================================================
+INDEX_KEYWORD_WHITELIST: dict[str, list[str]] = {
+    "67db7841ff4aaf0805487873": [
+        "Van Gaz ELLE",
+        "Gaz tải VAN 3",
+        "Xe gaz hoặc điện",
+        "Gaz 2023 bản 16 ghế",
+        "Gaz thùng mui bạt Tải 1t9",
+        "Mobihome gaz Vip",
+        "ae chạy xe gaz",
+        "Cần bán xe GAZ 20",
+        "GAZ 16 CHỖ XE THANH LÍ 2026",
+        "Tải Van GAZ siêu lướt",
+        "Xe Van Gaz",
+        "Tải Van Gaz",
+    ],
+}
+
+
+def _check_index_keyword_whitelist(index: Optional[str], *fields: Optional[str]) -> Optional[bool]:
+    """
+    Kiểm tra whitelist keyword theo index.
+    Trả về False (not spam) nếu bất kỳ field nào chứa keyword trong whitelist.
+    Trả về None nếu không match (tiếp tục xử lý bình thường).
+    So sánh case-insensitive.
+    """
+    if not index:
+        return None
+    keywords = INDEX_KEYWORD_WHITELIST.get(index)
+    if not keywords:
+        return None
+    combined = " ".join(str(f) for f in fields if f).lower()
+    for kw in keywords:
+        if kw.lower() in combined:
+            return False  # not spam
+    return None
+
+
 class SpamDetector:
     def __init__(self):
         self.semaphore = asyncio.Semaphore(settings.MAX_CONCURRENT_REQUESTS)
@@ -179,6 +222,16 @@ Output: SPAM hoặc NOT_SPAM"""
         return "NOT_SPAM"
 
     async def detect_spam(self, request: SpamRequest) -> bool:
+        # --- Index-level keyword whitelist (scale-friendly) ---
+        whitelist_result = _check_index_keyword_whitelist(
+            request.index,
+            request.title,
+            request.content,
+            request.description,
+        )
+        if whitelist_result is not None:
+            return whitelist_result
+
         # Special case: index 65808b57f27526950c9feb3 - custom logic
         if request.index == "65808b57f27526950c9feb3":
             content_text = self._safe(request.content) or self._safe(request.description)

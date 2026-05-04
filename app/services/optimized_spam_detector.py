@@ -10,6 +10,7 @@ import time
 
 from app.config import settings
 from app.models import SpamRequest
+from app.services.spam_detector import INDEX_KEYWORD_WHITELIST, _check_index_keyword_whitelist
 
 
 class OptimizedSpamDetector:
@@ -251,6 +252,16 @@ Output: SPAM hoặc NOT_SPAM"""
 
     async def detect_spam_single(self, request: SpamRequest) -> bool:
         """Optimized single spam detection"""
+        # --- Index-level keyword whitelist (scale-friendly) ---
+        whitelist_result = _check_index_keyword_whitelist(
+            request.index,
+            request.title,
+            request.content,
+            request.description,
+        )
+        if whitelist_result is not None:
+            return whitelist_result
+
         # Fast bypass for newsTopic
         if request.type == "newsTopic":
             return False
