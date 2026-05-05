@@ -7,6 +7,7 @@ class SpamRequest(BaseModel):
     title: Optional[str] = ""
     content: str
     description: Optional[str] = ""
+    site_id: Optional[str] = ""  # Added for excluded sites filter
     type: Literal[
         "fbPageComment", "fbGroupComment", "fbUserComment", "forumComment",
         "newsComment", "youtubeComment", "tiktokComment", "snsComment",

@@ -3,12 +3,58 @@ import random
 import json
 import hashlib
 import re
+import sys
+import os
 from typing import Optional
 import httpx
 import redis.asyncio as redis
 
 from app.config import settings
 from app.models import SpamRequest
+
+# Add parent directory to path for common modules
+# Fix: Use absolute path from container's /app directory
+sys.path.insert(0, '/app')
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
+# Import custom filters
+try:
+    from common.filter_registry import registry
+    from common.real_estate_classifier import check_real_estate_spam
+    from common.phone_shopee_detector import contains_vietnam_phone_or_shopee_link
+    from common.bank_spam_classifier import check_bank_spam
+    from common.excluded_sites import excluded_sites_manager
+    from common.cake_custom_filter import classify_row
+    print("✅ Custom filters loaded successfully")
+    CUSTOM_FILTERS_AVAILABLE = True
+except ImportError as e:
+    print(f"⚠️ Custom filters not available: {e}")
+    print(f"   Python path: {sys.path}")
+    print(f"   Current dir: {os.getcwd()}")
+    print(f"   Files in current dir: {os.listdir('.')}")
+    
+    # Create mock functions if import fails
+    class MockRegistry:
+        def load_from_config(self, path): pass
+        def has_filter(self, brand_id): return False
+        def get_filter(self, brand_id): return lambda x: False
+    
+    class MockExcludedSites:
+        def load_from_config(self, path): pass
+        def is_excluded(self, site_id): return False
+    
+    registry = MockRegistry()
+    excluded_sites_manager = MockExcludedSites()
+    
+    def check_real_estate_spam(obj, cat): return False
+    def check_bank_spam(obj, cat): return False
+    def contains_vietnam_phone_or_shopee_link(text): return False
+    def classify_row(row): 
+        print("⚠️ Using MOCK classify_row - custom filters not loaded!")
+        return "NO", "UNKNOWN"
+    
+    print("⚠️ Using mock custom filters")
+    CUSTOM_FILTERS_AVAILABLE = False
 
 
 # ============================================================
@@ -32,6 +78,57 @@ INDEX_KEYWORD_WHITELIST: dict[str, list[str]] = {
         "Xe Van Gaz",
         "Tải Van Gaz",
     ],
+}
+
+# ============================================================
+# Brand sentiment indices - for phone/Shopee detection
+# ============================================================
+BRAND_SENTIMENT_INDICES = {
+    "69d8865a9957472efb62d227": {"name": "Panasonic Washing Machine"},
+    "69d887739957472efb62d228": {"name": "Panasonic Fridge"},
+    "69d8a9849957472efb62d22a": {"name": "Panasonic Air-conditioner"},
+    "69d8a8c49957472efb62d229": {"name": "Panasonic Kitchenware"},
+    "69dc453fc941060a5c196195": {"name": "Sanyo Air-conditioner"},
+}
+
+# ============================================================
+# Category mapping
+# ============================================================
+CATEGORY_MAPPING = {
+    "Consumer Discretionary": "retail",
+    "Consumer Staples": "fmcg",
+    "Communication Services": "electronic",
+    "Finance": "bank",
+    "Healthcare": "hospital",
+    "Digital Payment": "ewallet",
+    "Real Estate": "real_estate",
+    "N/A": "corp",
+    "Education Services": "education",
+    "Information Tech": "software_technology",
+    "Industrials": "logistics",
+    "Energy": "energy_fuels",
+    "Automotive": "automotive",
+    "Bank": "bank",
+    "Corp": "corp",
+    "Ecommerce": "ecommerce",
+    "Education": "education",
+    "Electronic": "electronic",
+    "Energy Fuels": "energy_fuels",
+    "Entertianment Television": "entertainment_television",
+    "Ewallet": "ewallet",
+    "FMCG": "fmcg",
+    "FnB": "fnb",
+    "Healthcare Insurance": "healthcare_insurance",
+    "Home Living": "home_living",
+    "Hospital": "hospital",
+    "Insurance": "insurance",
+    "Investment": "investment",
+    "Logistic Delivery": "logistic_delivery",
+    "Logistics": "logistics",
+    "Retail": "retail",
+    "Software Technology": "software_technology",
+    "Technology Motorbike Food": "technology_motorbike_food",
+    "Telecomunication Internet": "telecomunication_internet"
 }
 
 
@@ -65,6 +162,172 @@ class SpamDetector:
             ),
         )
         self.redis_client = None
+        self.setup_custom_filters()
+    
+    def setup_custom_filters(self):
+        """Setup custom preprocessing filters"""
+        try:
+            # Get config paths
+            config_dir = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+                'config'
+            )
+            
+            # Load filter registry config
+            brand_filters_path = os.path.join(config_dir, 'brand_filters.json')
+            if os.path.exists(brand_filters_path):
+                registry.load_from_config(brand_filters_path)
+                stats = registry.get_stats()
+                print(f"📊 Filter Registry: {stats['total_filters']} filters, {stats['total_brands_with_filter']} brands")
+            else:
+                print(f"⚠️ Brand filters config not found: {brand_filters_path}")
+            
+            # Load excluded sites config
+            excluded_sites_path = os.path.join(config_dir, 'excluded_sites.json')
+            if os.path.exists(excluded_sites_path):
+                excluded_sites_manager.load_from_config(excluded_sites_path)
+                excluded_stats = excluded_sites_manager.get_stats()
+                print(f"🚫 Excluded Sites: {excluded_stats['total_excluded_sites']} sites")
+            else:
+                print(f"⚠️ Excluded sites config not found: {excluded_sites_path}")
+            
+            print("✅ Custom filters setup completed")
+        except Exception as e:
+            print(f"❌ Error setting up custom filters: {e}")
+    
+    def apply_preprocessing_filters(self, request: SpamRequest) -> Optional[dict]:
+        """
+        Apply preprocessing filters before LLM.
+        Returns dict with spam decision if filter matches, None otherwise.
+        """
+        try:
+            # Extract fields
+            brand_id = str(request.index or "")
+            site_id = str(request.site_id or "")
+            item_type = str(request.type or "")
+            category = str(request.category or "")
+            
+            # Map category
+            mapped_category = CATEGORY_MAPPING.get(category, category).lower()
+            
+            # Pre-filter 0: Excluded sites (highest priority)
+            if site_id and excluded_sites_manager.is_excluded(site_id):
+                print(f"🚫 Excluded site: {site_id}")
+                return {
+                    "spam": False,
+                    "reason": "excluded_site",
+                    "used_custom_filter": True
+                }
+            
+            # Pre-filter 1: CAKE Custom Filter (brand-specific)
+            if brand_id == "61b8715499ce4372a5d739a0":
+                try:
+                    row_data = {
+                        "Title": self._safe(request.title),
+                        "Content": self._safe(request.content),
+                        "Description": self._safe(request.description)
+                    }
+                    is_spam_result, spam_reason = classify_row(row_data)
+                    spam_bool = is_spam_result == "YES"
+                    print(f"🍰 CAKE filter: spam={spam_bool} ({spam_reason})")
+                    return {
+                        "spam": spam_bool,
+                        "reason": f"cake_custom_filter_{spam_reason.lower()}",
+                        "used_custom_filter": True
+                    }
+                except Exception as e:
+                    print(f"⚠️ CAKE filter error: {e}")
+            
+            # Pre-filter 2: News Topic
+            if item_type == "newsTopic":
+                print(f"📰 News topic detected")
+                return {
+                    "spam": False,
+                    "reason": "news_topic",
+                    "used_custom_filter": False
+                }
+            
+            # Pre-filter 3: Phone/Shopee Detection
+            if brand_id in BRAND_SENTIMENT_INDICES:
+                text = f"{self._safe(request.title)}\n{self._safe(request.description)}\n{self._safe(request.content)}"
+                try:
+                    if contains_vietnam_phone_or_shopee_link(text):
+                        print(f"📱 Phone/Shopee detected for brand {brand_id}")
+                        return {
+                            "spam": True,
+                            "reason": "phone_shopee_detected",
+                            "used_custom_filter": True
+                        }
+                except Exception as e:
+                    print(f"⚠️ Phone/Shopee detection error: {e}")
+            
+            # Pre-filter 4: Custom Brand Filter (Registry)
+            if brand_id and registry.has_filter(brand_id):
+                try:
+                    custom_filter = registry.get_filter(brand_id)
+                    filter_obj = {
+                        "title": self._safe(request.title),
+                        "content": self._safe(request.content),
+                        "description": self._safe(request.description),
+                        "topic": "",  # Not available in SpamRequest
+                        "site_id": site_id,
+                        "type": item_type,
+                        "parent_id": ""  # Not available in SpamRequest
+                    }
+                    is_spam_result = custom_filter(filter_obj)
+                    print(f"🎯 Custom brand filter for {brand_id}: spam={is_spam_result}")
+                    return {
+                        "spam": is_spam_result,
+                        "reason": "custom_brand_filter",
+                        "used_custom_filter": True
+                    }
+                except Exception as e:
+                    print(f"⚠️ Custom brand filter error: {e}")
+            
+            # Pre-filter 5: Real Estate Classifier
+            if mapped_category != "real_estate":
+                filter_obj = {
+                    "title": self._safe(request.title),
+                    "content": self._safe(request.content),
+                    "description": self._safe(request.description)
+                }
+                try:
+                    is_re_spam = check_real_estate_spam(filter_obj, mapped_category)
+                    if is_re_spam:
+                        print(f"🏠 Real estate spam detected in category: {mapped_category}")
+                        return {
+                            "spam": True,
+                            "reason": "real_estate_classified",
+                            "used_custom_filter": True
+                        }
+                except Exception as e:
+                    print(f"⚠️ Real estate classifier error: {e}")
+            
+            # Pre-filter 6: Bank Spam Classifier
+            if mapped_category == "bank":
+                filter_obj = {
+                    "title": self._safe(request.title),
+                    "content": self._safe(request.content),
+                    "description": self._safe(request.description)
+                }
+                try:
+                    is_bank_spam = check_bank_spam(filter_obj, mapped_category)
+                    if is_bank_spam:
+                        print(f"🏦 Bank spam detected (non-bank content in bank category)")
+                        return {
+                            "spam": True,
+                            "reason": "bank_spam_classified",
+                            "used_custom_filter": True
+                        }
+                except Exception as e:
+                    print(f"⚠️ Bank spam classifier error: {e}")
+            
+            # No preprocessing filter matched
+            return None
+            
+        except Exception as e:
+            print(f"❌ Preprocessing filters error: {e}")
+            return None
 
     async def _get_redis_client(self):
         """Lazy initialization of Redis client"""
@@ -222,6 +485,13 @@ Output: SPAM hoặc NOT_SPAM"""
         return "NOT_SPAM"
 
     async def detect_spam(self, request: SpamRequest) -> bool:
+        # --- Apply custom preprocessing filters first ---
+        preprocess_result = self.apply_preprocessing_filters(request)
+        if preprocess_result is not None:
+            # Custom filter matched, return result
+            print(f"✅ Custom filter applied: {preprocess_result['reason']}")
+            return preprocess_result["spam"]
+        
         # --- Index-level keyword whitelist (scale-friendly) ---
         whitelist_result = _check_index_keyword_whitelist(
             request.index,
@@ -299,7 +569,7 @@ Output: SPAM hoặc NOT_SPAM"""
         if cached_result is not None:
             return cached_result
         
-        # If not in cache, perform spam detection
+        # If not in cache, perform spam detection with LLM
         prompt = self._build_prompt(request)
         res = await self._call_llm(prompt)
         is_spam = self._parse(res)

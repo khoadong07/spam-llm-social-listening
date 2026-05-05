@@ -1,0 +1,53 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Git
+.git/
+.gitignore
+
+# Docker
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# Documentation (không cần trong container)
+*.md
+!README.md
+
+# Test files (không cần trong container)
+test_*.py
+*_test.py
+benchmark*.py
+quick_*.py
+clear_cache*.py
+batch_size*.py
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env files (sẽ được inject qua docker-compose)
+.env
+.env.*
+!.env.example
