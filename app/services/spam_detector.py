@@ -251,6 +251,15 @@ class SpamDetector:
             
             if brand_id in CAKE_BRAND_IDS:
                 try:
+                    # newsTopic luôn là not spam, không cần chạy rules
+                    if item_type == "newsTopic":
+                        print(f"📰 CAKE + newsTopic: always not spam")
+                        return {
+                            "spam": False,
+                            "reason": "cake_news_topic",
+                            "used_custom_filter": True
+                        }
+
                     # Check whitelist site_id first
                     if site_id and site_id in CAKE_WHITELIST_SITE_IDS:
                         print(f"✅ CAKE whitelist site_id: {site_id}")
