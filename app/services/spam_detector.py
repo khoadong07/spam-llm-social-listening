@@ -24,7 +24,7 @@ try:
     from common.phone_shopee_detector import contains_vietnam_phone_or_shopee_link
     from common.bank_spam_classifier import check_bank_spam
     from common.excluded_sites import excluded_sites_manager
-    from common.cake_custom_filter import classify_row
+    from common.cake_custom import detect_spam_by_rules
     print("✅ Custom filters loaded successfully")
     CUSTOM_FILTERS_AVAILABLE = True
 except ImportError as e:
@@ -38,10 +38,12 @@ except ImportError as e:
         def load_from_config(self, path): pass
         def has_filter(self, brand_id): return False
         def get_filter(self, brand_id): return lambda x: False
+        def get_stats(self): return {"total_filters": 0, "total_brands_with_filter": 0, "filters": {}}
     
     class MockExcludedSites:
         def load_from_config(self, path): pass
         def is_excluded(self, site_id): return False
+        def get_stats(self): return {"total_excluded_sites": 0}
     
     registry = MockRegistry()
     excluded_sites_manager = MockExcludedSites()
@@ -49,9 +51,9 @@ except ImportError as e:
     def check_real_estate_spam(obj, cat): return False
     def check_bank_spam(obj, cat): return False
     def contains_vietnam_phone_or_shopee_link(text): return False
-    def classify_row(row): 
-        print("⚠️ Using MOCK classify_row - custom filters not loaded!")
-        return "NO", "UNKNOWN"
+    def detect_spam_by_rules(text, return_all_matches=True):
+        print("⚠️ Using MOCK detect_spam_by_rules - custom filters not loaded!")
+        return {"is_spam": False, "matched_rule_names": [], "matched_rules": []}
     
     print("⚠️ Using mock custom filters")
     CUSTOM_FILTERS_AVAILABLE = False
@@ -220,23 +222,75 @@ class SpamDetector:
                 }
             
             # Pre-filter 1: CAKE Custom Filter (brand-specific)
-            if brand_id == "61b8715499ce4372a5d739a0":
+            CAKE_BRAND_IDS = [
+                "61b8715499ce4372a5d739a0",
+                "69a159aa70a3126a82dc59a9",
+                "69a59d9672f8bc4e413fe347",
+                "67666f9fe751a10ea07e7116",
+                "65e59161eabb263edf49ea51",
+                "65e59193eabb263edf49ea53",
+                "65e591aceabb263edf49ea54",
+                "69a5a0f872f8bc4e413fe39f"
+            ]
+            
+            # CAKE whitelist site_ids - always NOT SPAM
+            CAKE_WHITELIST_SITE_IDS = [
+                "104207641479754", "3669121246519130", "288689321975657", 
+                "347947601737555", "7434378166225060920", "UCgWhGJgQoHd55Sy4RRZ0JrQ",
+                "1128437083883364", "779920597704364", "148352300701985",
+                "369421359104320", "153300054101717", "3271261026461420",
+                "294056149200575", "138010322921640", "6996962998951134235",
+                "2364324374083169", "1522131724749959", "598327331238127",
+                "5179765988812453", "45383761769", "8520565951321852",
+                "108205300930682", "7106330596204889093", "587465330374050",
+                "612114073702939", "1000996731302563", "6863354907991344130",
+                "181643348566296", "130181207130065", "47461206774",
+                "273481559440423", "7015769125756109825", "2262780957320858",
+                "UCKHHW-qL2JoZqcSNm1jPlqw"
+            ]
+            
+            if brand_id in CAKE_BRAND_IDS:
                 try:
-                    row_data = {
-                        "Title": self._safe(request.title),
-                        "Content": self._safe(request.content),
-                        "Description": self._safe(request.description)
-                    }
-                    is_spam_result, spam_reason = classify_row(row_data)
-                    spam_bool = is_spam_result == "YES"
-                    print(f"🍰 CAKE filter: spam={spam_bool} ({spam_reason})")
+                    # Check whitelist site_id first
+                    if site_id and site_id in CAKE_WHITELIST_SITE_IDS:
+                        print(f"✅ CAKE whitelist site_id: {site_id}")
+                        return {
+                            "spam": False,
+                            "reason": "cake_whitelist_site",
+                            "used_custom_filter": True
+                        }
+                    
+                    # Merge text from title, content, description
+                    merged_text = " ".join([
+                        self._safe(request.title),
+                        self._safe(request.content),
+                        self._safe(request.description)
+                    ]).strip()
+                    
+                    print(f"🍰 CAKE filter (brand: {brand_id}, site: {site_id}) - Text preview: {merged_text[:200]}...")
+                    
+                    # Call detect_spam_by_rules from cake_custom
+                    spam_result = detect_spam_by_rules(merged_text, return_all_matches=True)
+                    
+                    is_spam = spam_result["is_spam"]
+                    matched_rules = spam_result["matched_rule_names"]
+                    
+                    if is_spam:
+                        print(f"🚫 CAKE spam detected - Rules: {matched_rules}")
+                        reason = f"cake_rules_{','.join(matched_rules[:3])}"  # Limit to first 3 rules
+                    else:
+                        print(f"✅ CAKE not spam - No rules matched")
+                        reason = "cake_rules_no_match"
+                    
                     return {
-                        "spam": spam_bool,
-                        "reason": f"cake_custom_filter_{spam_reason.lower()}",
+                        "spam": is_spam,
+                        "reason": reason,
                         "used_custom_filter": True
                     }
                 except Exception as e:
                     print(f"⚠️ CAKE filter error: {e}")
+                    import traceback
+                    traceback.print_exc()
             
             # Pre-filter 2: News Topic
             if item_type == "newsTopic":
