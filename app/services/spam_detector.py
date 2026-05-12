@@ -25,6 +25,7 @@ try:
     from common.bank_spam_classifier import check_bank_spam
     from common.excluded_sites import excluded_sites_manager
     from common.cake_custom import detect_spam_by_rules
+    from common.fwd_custom import classify_fwd_spam, FWD_INDICES
     print("✅ Custom filters loaded successfully")
     CUSTOM_FILTERS_AVAILABLE = True
 except ImportError as e:
@@ -54,7 +55,12 @@ except ImportError as e:
     def detect_spam_by_rules(text, return_all_matches=True):
         print("⚠️ Using MOCK detect_spam_by_rules - custom filters not loaded!")
         return {"is_spam": False, "matched_rule_names": [], "matched_rules": []}
-    
+
+    def classify_fwd_spam(title, content, description):
+        return {"is_spam": False, "reason": "fwd_mock"}
+
+    FWD_INDICES: set = set()
+
     print("⚠️ Using mock custom filters")
     CUSTOM_FILTERS_AVAILABLE = False
 
@@ -221,6 +227,47 @@ class SpamDetector:
                     "used_custom_filter": True
                 }
             
+            # Pre-filter 0b: title + content đều rỗng VÀ description có dạng profile update => SPAM
+            _PROFILE_UPDATE_PATTERNS = [
+                r"đã cập nhật ảnh đại diện",
+                r"đã thay đổi ảnh đại diện",
+                r"đã cập nhật ảnh bìa",
+                r"đã thay đổi ảnh bìa",
+                r"updated (?:their |his |her )?profile picture",
+                r"updated (?:their |his |her )?cover photo",
+                r"changed (?:their |his |her )?profile picture",
+                r"changed (?:their |his |her )?cover photo",
+            ]
+            _pf_title = self._safe(request.title)
+            _pf_content = self._safe(request.content)
+            _pf_desc = self._safe(request.description)
+            if not _pf_title and not _pf_content and _pf_desc:
+                for _pattern in _PROFILE_UPDATE_PATTERNS:
+                    if re.search(_pattern, _pf_desc, re.IGNORECASE):
+                        print(f"🖼️ Profile update detected (title & content empty, desc matches) => SPAM")
+                        return {
+                            "spam": True,
+                            "reason": "profile_update_action",
+                            "used_custom_filter": True
+                        }
+            
+            # Pre-filter 0c: FWD Custom Filter
+            if brand_id in FWD_INDICES:
+                try:
+                    fwd_result = classify_fwd_spam(
+                        request.title,
+                        request.content,
+                        request.description,
+                    )
+                    print(f"🔵 FWD filter (index: {brand_id}): spam={fwd_result['is_spam']}, reason={fwd_result['reason']}")
+                    return {
+                        "spam": fwd_result["is_spam"],
+                        "reason": fwd_result["reason"],
+                        "used_custom_filter": True,
+                    }
+                except Exception as e:
+                    print(f"⚠️ FWD filter error: {e}")
+
             # Pre-filter 1: CAKE Custom Filter (brand-specific)
             CAKE_BRAND_IDS = [
                 "61b8715499ce4372a5d739a0",

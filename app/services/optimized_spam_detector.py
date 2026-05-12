@@ -265,6 +265,27 @@ Output: SPAM hoặc NOT_SPAM"""
         # Fast bypass for newsTopic
         if request.type == "newsTopic":
             return False
+
+        # Profile update: title + content đều rỗng VÀ description có dạng profile update => SPAM
+        import re as _re
+        _PROFILE_UPDATE_PATTERNS = [
+            r"đã cập nhật ảnh đại diện",
+            r"đã thay đổi ảnh đại diện",
+            r"đã cập nhật ảnh bìa",
+            r"đã thay đổi ảnh bìa",
+            r"updated (?:their |his |her )?profile picture",
+            r"updated (?:their |his |her )?cover photo",
+            r"changed (?:their |his |her )?profile picture",
+            r"changed (?:their |his |her )?cover photo",
+        ]
+        _pf_title = self._safe(request.title)
+        _pf_content = self._safe(request.content)
+        _pf_desc = self._safe(request.description)
+        if not _pf_title and not _pf_content and _pf_desc:
+            for _pattern in _PROFILE_UPDATE_PATTERNS:
+                if _re.search(_pattern, _pf_desc, _re.IGNORECASE):
+                    print(f"🖼️ Profile update detected (title & content empty, desc matches) => SPAM")
+                    return True
         
         # Pre-check: Nội dung có trích dẫn nguồn tin chính thống => NOT_SPAM
         content_text = self._safe(request.content) or self._safe(request.description)
