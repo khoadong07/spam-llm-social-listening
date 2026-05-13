@@ -122,6 +122,19 @@ def vinfast_filter(obj: dict) -> bool:
     return is_spam(obj)
 
 
+@register_filter("ghn")
+def ghn_filter(obj: dict) -> bool:
+    """GHN (Giao Hang Nhanh) spam filter"""
+    from common.ghn_custom import classify_ghn_custom
+    result = classify_ghn_custom(
+        title=obj.get("title") or obj.get("Title"),
+        content=obj.get("content") or obj.get("Content"),
+        description=obj.get("description") or obj.get("Description"),
+        site_name=obj.get("site_name") or obj.get("SiteName"),
+    )
+    return result["is_spam"]
+
+
 # Thêm filters khác ở đây khi cần
 # @register_filter("samsung")
 # def samsung_filter(obj: dict) -> bool:

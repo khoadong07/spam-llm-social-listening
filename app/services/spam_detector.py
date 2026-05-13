@@ -26,6 +26,7 @@ try:
     from common.excluded_sites import excluded_sites_manager
     from common.cake_custom import detect_spam_by_rules
     from common.fwd_custom import classify_fwd_spam, FWD_INDICES
+    from common.ghn_custom import classify_ghn_custom, GHN_INDICES
     print("✅ Custom filters loaded successfully")
     CUSTOM_FILTERS_AVAILABLE = True
 except ImportError as e:
@@ -60,6 +61,11 @@ except ImportError as e:
         return {"is_spam": False, "reason": "fwd_mock"}
 
     FWD_INDICES: set = set()
+
+    def classify_ghn_custom(title, content, description, site_name=None):
+        return {"is_spam": False, "reason": "ghn_mock"}
+
+    GHN_INDICES: set = set()
 
     print("⚠️ Using mock custom filters")
     CUSTOM_FILTERS_AVAILABLE = False
@@ -267,6 +273,30 @@ class SpamDetector:
                     }
                 except Exception as e:
                     print(f"⚠️ FWD filter error: {e}")
+
+            # Pre-filter 0d: GHN Custom Filter
+            if brand_id in GHN_INDICES:
+                try:
+                    ghn_result = classify_ghn_custom(
+                        title=request.title,
+                        content=request.content,
+                        description=request.description,
+                        site_name=getattr(request, 'site_name', None),
+                    )
+                    matched = ghn_result.get("matched_rules", [])
+                    print(
+                        f"🟡 GHN filter | index={brand_id} | "
+                        f"spam={ghn_result['is_spam']} | "
+                        f"reason={ghn_result['reason']} | "
+                        f"matched={matched}"
+                    )
+                    return {
+                        "spam": ghn_result["is_spam"],
+                        "reason": ghn_result["reason"],
+                        "used_custom_filter": True,
+                    }
+                except Exception as e:
+                    print(f"⚠️ GHN filter error: {e}")
 
             # Pre-filter 1: CAKE Custom Filter (brand-specific)
             CAKE_BRAND_IDS = [

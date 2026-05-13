@@ -12,6 +12,18 @@ from app.config import settings
 from app.models import SpamRequest
 from app.services.spam_detector import INDEX_KEYWORD_WHITELIST, _check_index_keyword_whitelist
 
+try:
+    from common.fwd_custom import classify_fwd_spam, FWD_INDICES
+    from common.ghn_custom import classify_ghn_custom, GHN_INDICES
+except ImportError:
+    def classify_fwd_spam(title, content, description):
+        return {"is_spam": False, "reason": "fwd_mock"}
+    FWD_INDICES: set = set()
+
+    def classify_ghn_custom(title, content, description, site_name=None):
+        return {"is_spam": False, "reason": "ghn_mock"}
+    GHN_INDICES: set = set()
+
 
 class OptimizedSpamDetector:
     def __init__(self):
@@ -261,6 +273,41 @@ Output: SPAM hoặc NOT_SPAM"""
         )
         if whitelist_result is not None:
             return whitelist_result
+
+        brand_id = str(request.index or "")
+
+        # FWD Custom Filter
+        if brand_id in FWD_INDICES:
+            try:
+                fwd_result = classify_fwd_spam(
+                    request.title,
+                    request.content,
+                    request.description,
+                )
+                print(f"🔵 FWD filter (index: {brand_id}): spam={fwd_result['is_spam']}, reason={fwd_result['reason']}")
+                return fwd_result["is_spam"]
+            except Exception as e:
+                print(f"⚠️ FWD filter error: {e}")
+
+        # GHN Custom Filter
+        if brand_id in GHN_INDICES:
+            try:
+                ghn_result = classify_ghn_custom(
+                    title=request.title,
+                    content=request.content,
+                    description=request.description,
+                    site_name=getattr(request, 'site_name', None),
+                )
+                matched = ghn_result.get("matched_rules", [])
+                print(
+                    f"🟡 GHN filter | index={brand_id} | "
+                    f"spam={ghn_result['is_spam']} | "
+                    f"reason={ghn_result['reason']} | "
+                    f"matched={matched}"
+                )
+                return ghn_result["is_spam"]
+            except Exception as e:
+                print(f"⚠️ GHN filter error: {e}")
 
         # Fast bypass for newsTopic
         if request.type == "newsTopic":
