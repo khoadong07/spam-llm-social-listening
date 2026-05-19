@@ -2,6 +2,7 @@ import asyncio
 import random
 import json
 import hashlib
+import re
 from typing import Optional, Dict, Any, List
 import httpx
 import redis.asyncio as redis
@@ -15,6 +16,7 @@ from app.services.spam_detector import INDEX_KEYWORD_WHITELIST, _check_index_key
 try:
     from common.fwd_custom import classify_fwd_spam, FWD_INDICES
     from common.ghn_custom import classify_ghn_custom, GHN_INDICES
+    from common.bidv_custom import classify_bidv_spam, BIDV_INDICES
 except ImportError:
     def classify_fwd_spam(title, content, description):
         return {"is_spam": False, "reason": "fwd_mock"}
@@ -23,6 +25,10 @@ except ImportError:
     def classify_ghn_custom(title, content, description, site_name=None):
         return {"is_spam": False, "reason": "ghn_mock"}
     GHN_INDICES: set = set()
+
+    def classify_bidv_spam(title, content, description, is_post=True, channel=None, content_type=None):
+        return None
+    BIDV_INDICES: set = set()
 
 
 class OptimizedSpamDetector:
@@ -186,7 +192,7 @@ Type: {ctype}
 {text}
 
 SPAM nếu: quảng cáo/bán hàng/sale/tuyển dụng sai ngữ cảnh; có SĐT/Zalo/link/giá; link rác/cá cược/18+; nội dung rác/vô nghĩa/lỗi font; không liên quan.
-NOT_SPAM nếu: hỏi đáp, review, chia sẻ, phàn nàn, thảo luận bình thường, tin tức, phân tích.
+NOT_SPAM nếu: hỏi đáp, review, chia sẻ, phàn nàn, thảo luận bình thường, tin tức, phân tích, bình luận xã hội.
 
 Luật đặc biệt:
 - Real Estate + có SĐT/Zalo/link/giá cụ thể => SPAM (rao vặt)
@@ -195,9 +201,11 @@ Luật đặc biệt:
 - Finance + có SĐT/link dịch vụ tài chính => SPAM
 - BĐS sai category => SPAM
 - Tuyển dụng sai category => SPAM
-- Có từ "liên hệ", "bán", "cho thuê" + SĐT => SPAM
-- Comment dài với hashtag tin tức => NOT_SPAM (thảo luận)
+- Có từ "liên hệ", "bán", "cho thuê" + SĐT => SPAM (phải có SĐT đi kèm)
+- Comment/bài viết dài với hashtag tin tức (#tintuc, #tiktoknews, #news, v.v.) + không có SĐT/link/giá => NOT_SPAM (thảo luận/tin tức mạng xã hội)
 - Bài viết có nguồn tin (Báo, VTV, etc) => NOT_SPAM (tin tức)
+- Bài viết thảo luận chính sách/sản phẩm/dịch vụ công cộng (xăng dầu, điện, nước, y tế...) + không có SĐT/Zalo => NOT_SPAM (thảo luận công cộng)
+- Buzz/post mạng xã hội về thương hiệu lớn (Petrolimex, EVN, VNPT, Vingroup...) dạng chia sẻ/nhận xét + không rao bán => NOT_SPAM
 
 Output: SPAM hoặc NOT_SPAM"""
 
@@ -208,7 +216,7 @@ Output: SPAM hoặc NOT_SPAM"""
             self._safe(request.description),
             self._safe(request.category),
             self._safe(request.type),
-            version=2  # Tăng version để clear cache
+            version=3  # Tăng version để clear cache
         )
 
     def _parse(self, text: str) -> bool:
@@ -309,12 +317,36 @@ Output: SPAM hoặc NOT_SPAM"""
             except Exception as e:
                 print(f"⚠️ GHN filter error: {e}")
 
+        # BIDV Custom Filter (banking project topics)
+        if brand_id in BIDV_INDICES:
+            try:
+                _is_post = not request.type.endswith("Comment")
+                bidv_result = classify_bidv_spam(
+                    title=request.title,
+                    content=request.content,
+                    description=request.description,
+                    is_post=_is_post,
+                    channel=None,
+                    content_type=request.type,
+                )
+                if bidv_result is not None:
+                    matched = bidv_result.get("matched_rules", [])
+                    print(
+                        f"🏦 BIDV filter | index={brand_id} | "
+                        f"spam={bidv_result['is_spam']} | "
+                        f"reason={bidv_result['reason']} | "
+                        f"matched={matched}"
+                    )
+                    return bidv_result["is_spam"]
+                # None → no rule matched, fall through to general spam processing
+            except Exception as e:
+                print(f"⚠️ BIDV filter error: {e}")
+
         # Fast bypass for newsTopic
         if request.type == "newsTopic":
             return False
 
         # Profile update: title + content đều rỗng VÀ description có dạng profile update => SPAM
-        import re as _re
         _PROFILE_UPDATE_PATTERNS = [
             r"đã cập nhật ảnh đại diện",
             r"đã thay đổi ảnh đại diện",
@@ -330,31 +362,44 @@ Output: SPAM hoặc NOT_SPAM"""
         _pf_desc = self._safe(request.description)
         if not _pf_title and not _pf_content and _pf_desc:
             for _pattern in _PROFILE_UPDATE_PATTERNS:
-                if _re.search(_pattern, _pf_desc, _re.IGNORECASE):
+                if re.search(_pattern, _pf_desc, re.IGNORECASE):
                     print(f"🖼️ Profile update detected (title & content empty, desc matches) => SPAM")
                     return True
         
         # Pre-check: Nội dung có trích dẫn nguồn tin chính thống => NOT_SPAM
         content_text = self._safe(request.content) or self._safe(request.description)
         if content_text:
+            content_lower = content_text.lower()
+
             # Kiểm tra có nguồn tin tức chính thống
             news_sources = [
-                "nguồn:", "theo báo", "báo ", "vtv", "vov", "vnexpress", 
+                "nguồn:", "theo báo", "báo ", "vtv", "vov", "vnexpress",
                 "tuổi trẻ", "thanh niên", "dân trí", "vietnamnet", "zing news",
                 "theo vtc", "theo vn", "tin từ", "trích nguồn"
             ]
-            has_news_source = any(source in content_text.lower() for source in news_sources)
-            
+            has_news_source = any(source in content_lower for source in news_sources)
+
+            # Kiểm tra hashtag tin tức phổ biến trên mạng xã hội
+            news_hashtags = [
+                "#tintuc", "#tiktoknews", "#news", "#xangdau", "#petrolimex",
+                "#fyp", "#fyb", "#foryou", "#trending", "#viral",
+                "#chiase", "#thongtin", "#sukien"
+            ]
+            has_news_hashtag = any(tag in content_lower for tag in news_hashtags)
+
             # Kiểm tra không có dấu hiệu spam rõ ràng
             spam_indicators = ["liên hệ:", "zalo:", "sdt:", "hotline:", "inbox"]
-            has_spam_indicator = any(indicator in content_text.lower() for indicator in spam_indicators)
-            
+            has_spam_indicator = any(indicator in content_lower for indicator in spam_indicators)
+
             # Kiểm tra có số điện thoại (pattern: 0xxxxxxxxx)
-            import re
             has_phone = bool(re.search(r'\b0\d{9}\b', content_text))
-            
+
             # Nếu có nguồn tin chính thống và không có spam indicators => NOT_SPAM
             if has_news_source and not has_spam_indicator and not has_phone:
+                return False
+
+            # Buzz mạng xã hội: có hashtag tin tức, không có spam indicators, không có SĐT => NOT_SPAM
+            if has_news_hashtag and not has_spam_indicator and not has_phone:
                 return False
         
         # Generate cache key

@@ -24,5 +24,8 @@ USER appuser
 # Expose port
 EXPOSE 8000
 
+# PYTHONPATH needed so `common/` is importable
+ENV PYTHONPATH=/app
+
 # Run the application
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]
+CMD ["uvicorn", "app.optimized_main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]
