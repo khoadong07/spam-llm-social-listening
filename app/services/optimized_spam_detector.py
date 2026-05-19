@@ -17,6 +17,7 @@ try:
     from common.fwd_custom import classify_fwd_spam, FWD_INDICES
     from common.ghn_custom import classify_ghn_custom, GHN_INDICES
     from common.bidv_custom import classify_bidv_spam, BIDV_INDICES
+    from common.panasonic_custom import classify_panasonic_spam, PANASONIC_INDICES
 except ImportError:
     def classify_fwd_spam(title, content, description):
         return {"is_spam": False, "reason": "fwd_mock"}
@@ -29,6 +30,10 @@ except ImportError:
     def classify_bidv_spam(title, content, description, is_post=True, channel=None, content_type=None):
         return None
     BIDV_INDICES: set = set()
+
+    def classify_panasonic_spam(title, content, description, is_post=True, site_name=None, content_type=None):
+        return None
+    PANASONIC_INDICES: set = set()
 
 
 class OptimizedSpamDetector:
@@ -304,7 +309,7 @@ Output: SPAM hoặc NOT_SPAM"""
                     title=request.title,
                     content=request.content,
                     description=request.description,
-                    site_name=getattr(request, 'site_name', None),
+                    site_name=request.site_name or None,
                 )
                 matched = ghn_result.get("matched_rules", [])
                 print(
@@ -341,6 +346,31 @@ Output: SPAM hoặc NOT_SPAM"""
                 # None → no rule matched, fall through to general spam processing
             except Exception as e:
                 print(f"⚠️ BIDV filter error: {e}")
+
+        # Panasonic Custom Filter
+        if brand_id in PANASONIC_INDICES:
+            try:
+                _is_post = not request.type.endswith("Comment")
+                pana_result = classify_panasonic_spam(
+                    title=request.title,
+                    content=request.content,
+                    description=request.description,
+                    is_post=_is_post,
+                    site_name=request.site_name or None,
+                    content_type=request.type,
+                )
+                if pana_result is not None:
+                    matched = pana_result.get("matched_rules", [])
+                    print(
+                        f"📺 Panasonic filter | index={brand_id} | "
+                        f"spam={pana_result['is_spam']} | "
+                        f"reason={pana_result['reason']} | "
+                        f"matched={matched}"
+                    )
+                    return pana_result["is_spam"]
+                # None → no rule matched, fall through to general spam processing
+            except Exception as e:
+                print(f"⚠️ Panasonic filter error: {e}")
 
         # Fast bypass for newsTopic
         if request.type == "newsTopic":
