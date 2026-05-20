@@ -18,6 +18,7 @@ try:
     from common.ghn_custom import classify_ghn_custom, GHN_INDICES
     from common.bidv_custom import classify_bidv_spam, BIDV_INDICES
     from common.panasonic_custom import classify_panasonic_spam, PANASONIC_INDICES
+    from common.shb_custom import classify_shb_spam, SHB_INDICES, SHB_MAINBRAND_INDICES
 except ImportError:
     def classify_fwd_spam(title, content, description):
         return {"is_spam": False, "reason": "fwd_mock"}
@@ -34,6 +35,11 @@ except ImportError:
     def classify_panasonic_spam(title, content, description, is_post=True, site_name=None, content_type=None):
         return None
     PANASONIC_INDICES: set = set()
+
+    def classify_shb_spam(title, content, description, is_post=True, site_name=None, content_type=None, index=None):
+        return None
+    SHB_INDICES: set = set()
+    SHB_MAINBRAND_INDICES: set = set()
 
 
 class OptimizedSpamDetector:
@@ -371,6 +377,32 @@ Output: SPAM hoặc NOT_SPAM"""
                 # None → no rule matched, fall through to general spam processing
             except Exception as e:
                 print(f"⚠️ Panasonic filter error: {e}")
+
+        # SHB Custom Filter
+        if brand_id in SHB_INDICES:
+            try:
+                _is_post = not request.type.endswith("Comment")
+                shb_result = classify_shb_spam(
+                    title=request.title,
+                    content=request.content,
+                    description=request.description,
+                    is_post=_is_post,
+                    site_name=request.site_name or None,
+                    content_type=request.type,
+                    index=brand_id,
+                )
+                if shb_result is not None:
+                    matched = shb_result.get("matched_rules", [])
+                    print(
+                        f"🏛️ SHB filter | index={brand_id} | "
+                        f"spam={shb_result['is_spam']} | "
+                        f"reason={shb_result['reason']} | "
+                        f"matched={matched}"
+                    )
+                    return shb_result["is_spam"]
+                # None → no rule matched, fall through to general spam processing
+            except Exception as e:
+                print(f"⚠️ SHB filter error: {e}")
 
         # Fast bypass for newsTopic
         if request.type == "newsTopic":
