@@ -19,6 +19,7 @@ try:
     from common.bidv_custom import classify_bidv_spam, BIDV_INDICES
     from common.panasonic_custom import classify_panasonic_spam, PANASONIC_INDICES
     from common.shb_custom import classify_shb_spam, SHB_INDICES, SHB_MAINBRAND_INDICES
+    from common.fpt_poly_custom import classify_fpt_poly_spam, FPT_POLY_INDICES, FPT_POLY_KBEAUTY_INDICES
 except ImportError:
     def classify_fwd_spam(title, content, description):
         return {"is_spam": False, "reason": "fwd_mock"}
@@ -40,6 +41,11 @@ except ImportError:
         return None
     SHB_INDICES: set = set()
     SHB_MAINBRAND_INDICES: set = set()
+
+    def classify_fpt_poly_spam(title, content, description, is_post=True, site_name=None, content_type=None, index=None):
+        return None
+    FPT_POLY_INDICES: set = set()
+    FPT_POLY_KBEAUTY_INDICES: set = set()
 
 
 class OptimizedSpamDetector:
@@ -403,6 +409,32 @@ Output: SPAM hoặc NOT_SPAM"""
                 # None → no rule matched, fall through to general spam processing
             except Exception as e:
                 print(f"⚠️ SHB filter error: {e}")
+
+        # FPT Polytechnic Custom Filter
+        if brand_id in FPT_POLY_INDICES:
+            try:
+                _is_post = not request.type.endswith("Comment")
+                fpt_result = classify_fpt_poly_spam(
+                    title=request.title,
+                    content=request.content,
+                    description=request.description,
+                    is_post=_is_post,
+                    site_name=request.site_name or None,
+                    content_type=request.type,
+                    index=brand_id,
+                )
+                if fpt_result is not None:
+                    matched = fpt_result.get("matched_rules", [])
+                    print(
+                        f"🎓 FPT Poly filter | index={brand_id} | "
+                        f"spam={fpt_result['is_spam']} | "
+                        f"reason={fpt_result['reason']} | "
+                        f"matched={matched}"
+                    )
+                    return fpt_result["is_spam"]
+                # None → no rule matched, fall through to general spam processing
+            except Exception as e:
+                print(f"⚠️ FPT Poly filter error: {e}")
 
         # Fast bypass for newsTopic
         if request.type == "newsTopic":
